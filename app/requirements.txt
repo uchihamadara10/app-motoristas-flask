@@ -1,4 +1,0 @@
-Flask
-firebase-admin
-pytz
-gunicorn

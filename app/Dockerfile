@@ -2,14 +2,14 @@
 FROM python:3.9-slim-buster
 
 # Define o diretório de trabalho dentro do contêiner como /app
-# E O Cloud Build VAI PARA /workspace/app/
 WORKDIR /app
 
-# Copia o arquivo requirements.txt da pasta 'app/' no seu repositório para a raiz do WORKDIR (/app) no contêiner
-COPY app/requirements.txt .
+# Copia o arquivo requirements.txt da raiz do seu repositório para /app no contêiner
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o restante do código da aplicação da pasta 'app/' para a raiz do WORKDIR (/app) no contêiner
+# Copia o restante do código da aplicação (que está em app/) para /app no contêiner
+# Isso copiará o conteúdo de "app/" do seu repositório para o WORKDIR /app
 COPY app/. .
 
 # Define a variável de ambiente para a porta que o Cloud Run vai expor

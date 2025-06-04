@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+.tox/
+dist/
+build/
+# Certificados de Firebase (SE você não quiser que vá para o Git - o Cloud Run usa variável de ambiente)
+serviceAccountKey.json
+# Outros arquivos de ambiente local
+.env

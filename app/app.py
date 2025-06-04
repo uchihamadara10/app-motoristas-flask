@@ -1,39 +1,45 @@
+import os
 import json
-from flask import Flask, request, render_template_string, redirect
-from datetime import datetime
-import pytz
-import math
 import firebase_admin
 from firebase_admin import credentials, firestore
-import os
-import re # Importar módulo de expressões regulares
+from flask import Flask, render_template, request, jsonify, redirect, url_for, render_template_string # Adicionado render_template_string
+from datetime import datetime
+import pytz
+import re # Adicionado: Importar a biblioteca 're' para expressões regulares
+import math # Adicionado: Importar a biblioteca 'math' para cálculos matemáticos
 
-# Inicialização do Firebase
+# --- Inicialização do Flask ---
+app = Flask(__name__)
+
+# --- Inicialização do Firebase Firestore ---
 if not firebase_admin._apps:
     try:
-        # Tenta carregar as credenciais da variável de ambiente
         service_account_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT_KEY')
         if service_account_json:
             cred_dict = json.loads(service_account_json)
             cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            print("Firebase inicializado com sucesso via variável de ambiente!")
         else:
-            # Fallback para o arquivo local para desenvolvimento (OPCIONAL, mas útil para testes locais)
-            # Remova/comente esta parte se você quiser FORÇAR o uso da variável de ambiente em qualquer lugar
             if os.path.exists("serviceAccountKey.json"):
                 cred = credentials.Certificate("serviceAccountKey.json")
+                firebase_admin.initialize_app(cred)
+                print("Firebase inicializado com sucesso via arquivo local (APENAS PARA DESENVOLVIMENTO)!")
             else:
-                print("ERRO: Variável de ambiente 'FIREBASE_SERVICE_ACCOUNT_KEY' ou arquivo 'serviceAccountKey.json' não encontrado.")
-                print("Por favor, configure a variável de ambiente no Cloud Run.")
+                print("ERRO CRÍTICO: Variável de ambiente 'FIREBASE_SERVICE_ACCOUNT_KEY' não encontrada e 'serviceAccountKey.json' não existe.")
+                print("Não é possível inicializar o Firebase. Verifique a configuração do Cloud Run ou o arquivo local.")
                 exit(1)
 
-        firebase_admin.initialize_app(cred)
     except Exception as e:
-        print(f"ERRO: Falha ao inicializar o Firebase. Verifique as credenciais. Detalhes: {e}")
+        print(f"ERRO FATAL: Falha ao inicializar o Firebase/Firestore. Detalhes: {e}")
         exit(1)
 
-app = Flask(__name__)
+# Apenas inicialize o cliente Firestore UMA VEZ, após o app Firebase ser inicializado
+db = firestore.client() 
+print("Firestore client inicializado.")
 
-# Função para calcular distância
+
+# Função para calcular distância (Haversine)
 def calcular_distancia(lat1, lon1, lat2, lon2):
     R = 6371000 # Raio da Terra em metros
     phi1 = math.radians(lat1)
@@ -44,6 +50,7 @@ def calcular_distancia(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+# --- Rota Principal com HTML incorporado ---
 @app.route('/')
 def index():
     return '''
@@ -140,7 +147,7 @@ def index():
                     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
                     const distancia = R * c;
 
-                    const raioPermitido = 300; // Distância em metros (200m de raio)
+                    const raioPermitido = 300; // Distância em metros (300m de raio)
 
                     if (distancia <= raioPermitido) {
                         window.location.href = "/pergunta";
@@ -171,6 +178,7 @@ def index():
     </html>
     '''
 
+# --- Rota para a pergunta "Entrada ou Saída" com HTML incorporado ---
 @app.route('/pergunta')
 def pergunta():
     return '''
@@ -230,132 +238,19 @@ def pergunta():
     </html>
     '''
 
+# --- Rota de Registro com HTML incorporado ---
 @app.route('/registrar', methods=['GET', 'POST'])
 def registrar():
     tipo_predefinido = request.args.get('tipo', '')
     
-    mensagem_erro = "" # Para exibir mensagens de erro no formulário
-    # Variáveis para manter os valores preenchidos em caso de erro
+    mensagem_erro = "" 
     nome_valor = ""
     placa_valor = ""
     ordem_valor = ""
     transportadora_valor = ""
     quilometragem_valor = ""
 
-    if request.method == 'POST':
-        nome = request.form['nome'].upper().strip()
-        placa_raw = request.form['placa']
-        ordem_raw = request.form['ordem']
-        tipo = request.form['tipo']
-        transportadora = request.form['Transportadora'].upper().strip()
-        quilometragem = request.form.get('quilometragem', '').strip() # Campo opcional
-
-        # --- Validações e Normalizações no Servidor (Python) ---
-        
-        # Placa: remover espaços e pontuações, converter para maiúsculas
-        placa = re.sub(r'[^A-Z0-9]', '', placa_raw.upper()) # Remove tudo que não for letra maiúscula ou número
-        
-        # Ordem de Coleta: remover espaços, obrigatório, converter para maiúsculas
-        ordem = ordem_raw.strip().upper() # Remove espaços no início/fim e converte para maiúsculas
-        ordem = re.sub(r'\s+', '', ordem) # Remove múltiplos espaços no meio (se houver)
-
-        # Reatribui os valores para o formulário em caso de re-renderização
-        nome_valor = nome
-        placa_valor = placa_raw
-        ordem_valor = ordem_raw
-        transportadora_valor = transportadora
-        quilometragem_valor = quilometragem
-
-        if not nome:
-            mensagem_erro = "O Nome do Motorista é obrigatório."
-        elif not placa:
-            mensagem_erro = "A Placa do Veículo é obrigatória e não pode estar vazia."
-        elif not ordem:
-            mensagem_erro = "A Ordem de Coleta é obrigatória e não pode estar vazia."
-        elif not transportadora:
-            mensagem_erro = "A Transportadora é obrigatória."
-        
-        # Validação de quilometragem (se preenchida, deve ser um número inteiro positivo)
-        if not mensagem_erro and quilometragem: # Só valida se não houver erro anterior
-            try:
-                quilometragem_int = int(quilometragem)
-                if quilometragem_int < 0:
-                    mensagem_erro = "A quilometragem deve ser um número positivo."
-            except ValueError:
-                mensagem_erro = "A quilometragem deve ser um número válido (apenas números inteiros)."
-
-        if mensagem_erro:
-            # Se houver erro, renderiza o formulário novamente com a mensagem
-            return render_template_string(template_registro_html, 
-                                        tipo=tipo_predefinido, 
-                                        nome_valor=nome_valor, 
-                                        placa_valor=placa_valor, 
-                                        ordem_valor=ordem_valor, 
-                                        transportadora_valor=transportadora_valor,
-                                        quilometragem_valor=quilometragem_valor, 
-                                        mensagem_erro=mensagem_erro)
-
-        horario = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%Y-%m-%d %H:%M:%S')
-        
-        try:
-            db_firestore = firestore.client()
-            registros_ref = db_firestore.collection('registros')
-            novo_registro = {
-                'nome': nome,
-                'placa': placa, # Placa normalizada
-                'ordem': ordem, # Ordem normalizada
-                'tipo': tipo,
-                'horario': horario,
-                'Transportadora': transportadora
-            }
-            # Adiciona a quilometragem se ela foi preenchida e é válida
-            if quilometragem and not mensagem_erro: # Verifica se não houve erro na validação da quilometragem
-                novo_registro['quilometragem'] = int(quilometragem)
-
-            registros_ref.add(novo_registro)
-
-            return '''
-            <!DOCTYPE html>
-            <html lang="pt-BR">
-            <head>
-                <meta charset="UTF-8">
-                <meta http-equiv="refresh" content="2;url=/" />
-                <title>Sucesso!</title>
-                <style>
-                    body {
-                        background-color: #1e1e1e; color: white;
-                        display: flex; justify-content: center; align-items: center; height: 100vh;
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    }
-                    div {
-                        text-align: center; background-color: #333; padding: 30px; border-radius: 10px;
-                        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
-                    }
-                    h2 { color: lime; font-size: 2em; margin-bottom: 10px; }
-                    p { font-size: 1.1em; }
-                </style>
-            </head>
-            <body>
-                <div>
-                    <h2>✅ Registro salvo com sucesso!</h2>
-                    <p>Você será redirecionado em instantes...</p>
-                </div>
-            </body>
-            </html>
-            '''
-        except Exception as e:
-            # Em caso de erro no Firestore, exibe a mensagem de erro no formulário
-            mensagem_erro = f"Erro ao salvar no Firestore: {e}. Por favor, tente novamente."
-            return render_template_string(template_registro_html, 
-                                        tipo=tipo_predefinido, 
-                                        nome_valor=nome_valor, 
-                                        placa_valor=placa_valor, 
-                                        ordem_valor=ordem_valor, 
-                                        transportadora_valor=transportadora_valor,
-                                        quilometragem_valor=quilometragem_valor,
-                                        mensagem_erro=mensagem_erro)
-
-    # --- HTML do Formulário (GET request ou POST com erro) ---
+    # Definição do template_registro_html aqui (se você não tiver um arquivo separado)
     template_registro_html = '''
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -386,13 +281,13 @@ def registrar():
             }
             label { 
                 font-weight: bold; display: block; margin-top: 20px; text-align: left; 
-                color: #5a2e0e; /* Marrom mais escuro */
+                color: #5a2e0e; 
             }
             input[type="text"], input[type="number"], select { 
-                width: calc(100% - 22px); /* Ajusta para padding */
+                width: calc(100% - 22px); 
                 padding: 11px; border-radius: 6px; margin-top: 8px;
                 border: 1px solid #ccc; font-size: 1em;
-                box-sizing: border-box; /* Inclui padding na largura */
+                box-sizing: border-box; 
             }
             input[type="submit"] {
                 background-color: #8B4513; color: white; border: none; cursor: pointer; margin-top: 30px;
@@ -402,11 +297,11 @@ def registrar():
             }
             input[type="submit"]:hover { 
                 background-color: #a0522d; 
-                transform: translateY(-2px); /* Efeito de elevação */
+                transform: translateY(-2px); 
             }
             .error-message { 
-                color: #D32F2F; /* Vermelho mais forte */
-                background-color: #FFCDD2; /* Fundo vermelho claro */
+                color: #D32F2F; 
+                background-color: #FFCDD2; 
                 border: 1px solid #EF9A9A;
                 padding: 10px; border-radius: 5px;
                 margin-top: 15px; font-weight: bold;
@@ -462,22 +357,19 @@ def registrar():
                 let quilometragemInput = document.getElementById('quilometragem');
                 let errorMessageDiv = document.querySelector('.error-message');
 
-                // Se não existir, cria e insere a div de erro
                 if (!errorMessageDiv) {
                     errorMessageDiv = document.createElement('p');
                     errorMessageDiv.className = 'error-message';
                     document.querySelector('.form-box form').prepend(errorMessageDiv);
                 }
-                errorMessageDiv.textContent = ''; // Limpa a mensagem de erro anterior
+                errorMessageDiv.textContent = ''; 
 
-                // Validações de campos obrigatórios
                 if (nomeInput.value.trim() === '') {
                     errorMessageDiv.textContent = 'O Nome do Motorista é obrigatório.';
                     nomeInput.focus();
                     return false;
                 }
 
-                // Remove espaços e pontuações da placa ANTES de validar no cliente
                 placaInput.value = placaInput.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
                 if (placaInput.value === '') {
                     errorMessageDiv.textContent = 'A Placa do Veículo é obrigatória.';
@@ -485,7 +377,6 @@ def registrar():
                     return false;
                 }
                 
-                // Remove espaços da ordem ANTES de validar no cliente
                 ordemInput.value = ordemInput.value.trim().toUpperCase().replace(/\s+/g, '');
                 if (ordemInput.value === '') {
                     errorMessageDiv.textContent = 'A Ordem de Coleta é obrigatória.';
@@ -499,7 +390,6 @@ def registrar():
                     return false;
                 }
 
-                // Validação de quilometragem no cliente (opcional, mas boa prática)
                 if (quilometragemInput.value !== '') {
                     let quilometragem = parseInt(quilometragemInput.value);
                     if (isNaN(quilometragem) || quilometragem < 0) {
@@ -509,13 +399,116 @@ def registrar():
                     }
                 }
                 
-                return true; // Se tudo estiver OK, envia o formulário
+                return true;
             }
         </script>
     </body>
     </html>
     '''
-    # Passa valores vazios para os campos no primeiro carregamento (GET request)
+
+    if request.method == 'POST':
+        nome = request.form['nome'].upper().strip()
+        placa_raw = request.form['placa']
+        ordem_raw = request.form['ordem']
+        tipo = request.form['tipo']
+        transportadora = request.form['Transportadora'].upper().strip()
+        quilometragem = request.form.get('quilometragem', '').strip() 
+
+        placa = re.sub(r'[^A-Z0-9]', '', placa_raw.upper())
+        ordem = re.sub(r'\s+', '', ordem_raw.strip().upper())
+
+        nome_valor = nome
+        placa_valor = placa_raw
+        ordem_valor = ordem_raw
+        transportadora_valor = transportadora
+        quilometragem_valor = quilometragem
+
+        if not nome:
+            mensagem_erro = "O Nome do Motorista é obrigatório."
+        elif not placa:
+            mensagem_erro = "A Placa do Veículo é obrigatória e não pode estar vazia."
+        elif not ordem:
+            mensagem_erro = "A Ordem de Coleta é obrigatória e não pode estar vazia."
+        elif not transportadora:
+            mensagem_erro = "A Transportadora é obrigatória."
+        
+        if not mensagem_erro and quilometragem:
+            try:
+                quilometragem_int = int(quilometragem)
+                if quilometragem_int < 0:
+                    mensagem_erro = "A quilometragem deve ser um número positivo."
+            except ValueError:
+                mensagem_erro = "A quilometragem deve ser um número válido (apenas números inteiros)."
+
+        if mensagem_erro:
+            return render_template_string(template_registro_html, 
+                                        tipo=tipo_predefinido, 
+                                        nome_valor=nome_valor, 
+                                        placa_valor=placa_valor, 
+                                        ordem_valor=ordem_valor, 
+                                        transportadora_valor=transportadora_valor,
+                                        quilometragem_valor=quilometragem_valor, 
+                                        mensagem_erro=mensagem_erro)
+
+        horario = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%Y-%m-%d %H:%M:%S')
+        
+        try:
+            # Use a variável 'db' que já foi inicializada globalmente
+            registros_ref = db.collection('registros')
+            novo_registro = {
+                'nome': nome,
+                'placa': placa, 
+                'ordem': ordem, 
+                'tipo': tipo,
+                'horario': horario,
+                'Transportadora': transportadora
+            }
+            if quilometragem and not mensagem_erro:
+                novo_registro['quilometragem'] = int(quilometragem)
+
+            registros_ref.add(novo_registro)
+
+            return '''
+            <!DOCTYPE html>
+            <html lang="pt-BR">
+            <head>
+                <meta charset="UTF-8">
+                <meta http-equiv="refresh" content="2;url=/" />
+                <title>Sucesso!</title>
+                <style>
+                    body {
+                        background-color: #1e1e1e; color: white;
+                        display: flex; justify-content: center; align-items: center; height: 100vh;
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    }
+                    div {
+                        text-align: center; background-color: #333; padding: 30px; border-radius: 10px;
+                        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+                    }
+                    h2 { color: lime; font-size: 2em; margin-bottom: 10px; }
+                    p { font-size: 1.1em; }
+                </style>
+            </head>
+            <body>
+                <div>
+                    <h2>✅ Registro salvo com sucesso!</h2>
+                    <p>Você será redirecionado em instantes...</p>
+                </div>
+            </body>
+            </html>
+            '''
+        except Exception as e:
+            mensagem_erro = f"Erro ao salvar no Firestore: {e}. Por favor, tente novamente."
+            return render_template_string(template_registro_html, 
+                                        tipo=tipo_predefinido, 
+                                        nome_valor=nome_valor, 
+                                        placa_valor=placa_valor, 
+                                        ordem_valor=ordem_valor, 
+                                        transportadora_valor=transportadora_valor,
+                                        quilometragem_valor=quilometragem_valor,
+                                        mensagem_erro=mensagem_erro)
+
+    # Este é o bloco para a requisição GET inicial (ou POST com erro antes do Firebase)
     return render_template_string(template_registro_html, 
                                 tipo=tipo_predefinido, 
                                 nome_valor="", 
@@ -523,8 +516,4 @@ def registrar():
                                 ordem_valor="", 
                                 transportadora_valor="",
                                 quilometragem_valor="",
-                                mensagem_erro=mensagem_erro) 
-
-if __name__ == '__main__':
-    # Usar porta 8080 que é comum para aplicações web ou outra que preferir
-    app.run(host='0.0.0.0', port=8080, debug=True) # debug=True para desenvolvimento
+                                mensagem_erro=mensagem_erro)
